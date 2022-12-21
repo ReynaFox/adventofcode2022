@@ -1,7 +1,7 @@
 ﻿using System.Text.RegularExpressions;
 
 part1();
-//part2();
+part2();
 
 static void part1() {
 	var blueprints = read();
@@ -23,7 +23,7 @@ static void part2() {
 	var blueprints = read();
 
 	var sum = 1;
-	for (int i = 0; i < 3; i++) {
+	for (int i = 0; i < Math.Min(3, blueprints.Count); i++) {
 		var g = check(
 			blueprints[i], 32, new Resources(0, 0, 0, 0), 
 			new Resources(1, 0, 0, 0)
@@ -76,41 +76,87 @@ static List<Blueprint> read() {
 }
 
 static int check(Blueprint b, int stepsLeft, Resources resources, Resources income) {
-	if (stepsLeft == 0) {
-		return resources.geode;
-	}
-	if (stepsLeft == 1) {
-		return resources.geode + income.geode;
-	}
-	var buildOptions = new List<Action> { Action.nothing };
-	if (income.ore < b.max.ore && b.ore.canAfford(resources)) buildOptions.Add(Action.ore);
-	if (income.clay < b.max.clay  && b.clay.canAfford(resources)) buildOptions.Add(Action.clay);
-	if (income.obsidian < b.max.obsidian  && b.obsidian.canAfford(resources)) buildOptions.Add(Action.obsidian);
-	if (b.geode.canAfford(resources)) buildOptions.Add(Action.geode);
-	//buildOptions.Reverse();
+	var buildOptions = new List<Action>();
 
-	var best = 0;
-	var paths = new List<string>();
+	var oreSteps = affordableInSteps(b.ore);
+	var claySteps = affordableInSteps(b.clay);
+	var obsSteps = affordableInSteps(b.obsidian);
+	var geodeSteps = affordableInSteps(b.geode);
+	if (income.ore < b.max.ore && oreSteps <= stepsLeft-3) buildOptions.Add(Action.ore);
+	if (income.clay < b.max.clay &&
+	    resourceCheck(b.max.clay-income.clay, 5, b.obsidian.clay, resources.clay, income.clay) &&
+	    claySteps <= stepsLeft-5) buildOptions.Add(Action.clay);
+	if (income.obsidian < b.max.obsidian &&
+	    resourceCheck(b.max.obsidian-income.obsidian, 3, b.geode.obsidian, resources.obsidian, income.obsidian) &&
+	    obsSteps <= stepsLeft-3) buildOptions.Add(Action.obsidian);
+	if (geodeSteps <= stepsLeft-1) buildOptions.Add(Action.geode);
+
+	if (buildOptions.Count == 0) {
+		// Out of things to build, run out the clock.
+		return resources.geode + stepsLeft*income.geode;
+	}
+
+	int best = 0;
 	foreach (var option in buildOptions) {
-		var newIncome = option switch {
-			Action.nothing => income,
-			Action.ore => income.add(1, 0, 0, 0),
-			Action.clay => income.add(0, 1, 0, 0),
-			Action.obsidian => income.add(0, 0, 1, 0),
-			Action.geode => income.add(0, 0, 0, 1)
+		// The resource computation: skip to the step we build, and add the income for the build step as well, then subtract build cost
+		var subBest = option switch {
+			Action.ore =>
+				best = check(
+					b, stepsLeft-oreSteps-1,
+					resources + (oreSteps+1) * income - b.ore,
+					income + new Resources(1, 0, 0, 0)
+				),
+			Action.clay =>
+				check(
+					b, stepsLeft-claySteps-1,
+					resources + (claySteps+1) * income - b.clay,
+					income + new Resources(0, 1, 0, 0)
+				),
+			Action.obsidian =>
+				check(
+					b, stepsLeft-obsSteps-1,
+					resources + (obsSteps+1) * income - b.obsidian,
+					income + new Resources(0, 0, 1, 0)
+				),
+			Action.geode =>
+				check(
+					b, stepsLeft-geodeSteps-1,
+					resources + (geodeSteps+1) * income - b.geode,
+					income + new Resources(0, 0, 0, 1)
+				),
 		};
-		var cost = option switch {
-			Action.nothing => new Resources(0, 0, 0, 0),
-			Action.ore => b.ore,
-			Action.clay => b.clay,
-			Action.obsidian => b.obsidian,
-			Action.geode => b.geode
-		};
-		var newResources = resources.sub(cost).add(income);
-		best = Math.Max(best, check(b, stepsLeft-1, newResources, newIncome));
+		best = Math.Max(best, subBest);
 	}
 
 	return best;
+
+	bool resourceCheck(int botsLeft, int stepLimit, int resourceCost, int resStock, int resIncome) {
+		// If we would build a bot requiring resource X this step and every following one until we have
+		// built another botsLeft of those, can we afford that on stocked resources + income alone?
+		// Also cap on the step limit, as we don't build beyond that.
+		var botCount = Math.Min(botsLeft, stepsLeft-stepLimit+1);
+
+		var totalCost = botCount*resourceCost;
+		var totalResources = resStock + resIncome*(botCount-1);
+
+		// It's still useful to build a resource producer if we can't produce all buildings from stock and income
+		return totalResources < totalCost;
+	}
+
+	// Returns after how many steps the build can be bought, or infinity if it's never affordable.
+	int affordableInSteps(Resources r) {
+		var oreSteps = r.ore > 0
+			? (income.ore > 0 ? (int)Math.Ceiling((double)Math.Max(0, r.ore-resources.ore)/income.ore) : int.MaxValue)
+			: -1;
+		var claySteps = r.clay > 0
+			? (income.clay > 0 ? (int)Math.Ceiling((double)Math.Max(0, r.clay-resources.clay)/income.clay) : int.MaxValue)
+			: -1;
+		var obsidianSteps = r.obsidian > 0
+			? (income.obsidian > 0 ? (int)Math.Ceiling((double)Math.Max(0, r.obsidian-resources.obsidian)/income.obsidian) : int.MaxValue)
+			: -1;
+
+		return Math.Max(Math.Max(oreSteps, claySteps), obsidianSteps);
+	}
 }
 
 enum Action {
@@ -131,19 +177,23 @@ class Blueprint {
 }
 
 record Resources(int ore, int clay, int obsidian, int geode) {
-	public Resources add(Resources r) {
-		return new Resources(ore+r.ore, clay+r.clay, obsidian+r.obsidian, geode+r.geode);
+	public static Resources operator +(Resources a, Resources b) {
+		return new Resources(a.ore+b.ore, a.clay+b.clay, a.obsidian+b.obsidian, a.geode+b.geode);
+	}
+
+	public static Resources operator -(Resources a, Resources b) {
+		return new Resources(a.ore-b.ore, a.clay-b.clay, a.obsidian-b.obsidian, a.geode-b.geode);
+	}
+
+	public static Resources operator *(Resources a, int b) {
+		return new Resources(a.ore*b, a.clay*b, a.obsidian*b, a.geode*b);
+	}
+
+	public static Resources operator *(int a, Resources b) {
+		return b*a;
 	}
 
 	public Resources add(int ore, int clay, int obsidian, int geode) {
 		return new Resources(this.ore+ore, this.clay+clay, this.obsidian+obsidian, this.geode+geode);
-	}
-
-	public Resources sub(Resources r) {
-		return new Resources(ore-r.ore, clay-r.clay, obsidian-r.obsidian, geode-r.geode);
-	}
-
-	public bool canAfford(Resources r) {
-		return r.ore >= ore && r.clay >= clay && r.obsidian >= obsidian;
 	}
 }
